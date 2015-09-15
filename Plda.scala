@@ -1,6 +1,6 @@
 package com.tang
 
-import org.apache.spark.mllib.clustering.{LDA, LDAModel, LocalLDAModel, DistributedLDAModel}
+import org.apache.spark.mllib.clustering._
 import org.apache.spark.mllib.linalg.Vectors
 import org.apache.spark._
 import org.apache.spark.SparkContext
@@ -18,7 +18,7 @@ object Plda {
     val maxIterations = 150
     val minDocFreq = 10
 
-    val conf = new SparkConf().setAppName("PLDA")
+    val conf = new SparkConf().setAppName("PLDA").set("spark.executor.memory", "2g")
     val sc = new SparkContext(conf)
 
     val file = sc.textFile(args(0))
@@ -34,31 +34,35 @@ object Plda {
     val hashDocTerm = hashTF.transform(doc.mapValues(_.toIterable))
 
     val termCount = doc.map(_._2).flatMap(_.toIterator).map(term => (term, 1L)).reduceByKey(_ + _)
+    termCount.cache()
+    //save to hdfs
+    termCount.saveAsTextFile(args(1) + "/termCount")
 
     val term = termCount.filter(_._2 > minDocFreq).map(_._1)
-    term.cache()
-    //save to hdfs
-    term.saveAsTextFile(args(1) + "/termColumn")
-    val termArray = term.collect()
     //print all terms(has filter)
     /*    for (word <- termArray) {
           print(word + " ")
         }
         println()*/
 
+    val index = term.map { word =>
+      hashTF.indexOf(word)
+    }
+    val indexArray = index.collect() //index array of term's index in hashDocTerm
+
     //broadcast
-    val bcTermArray = hashDocTerm.context.broadcast(termArray)
+    //val bcIndexArray = hashDocTerm.context.broadcast(indexArray)
 
     val docTerm = hashDocTerm.mapValues { tf =>
-      val thisTermArray = bcTermArray.value
+      //val thisIndexArray = bcIndexArray.value
       var indexFreqArray = new ArrayBuffer[(Int, Double)]()
-      for (i <- Range(0, thisTermArray.size)) {
-        val tfIndex = hashTF.indexOf(thisTermArray(i))
-        val tfFreq = tf.apply(tfIndex)
-        if (tfFreq > 0.5) //sparse vector, we need tfFreq > 0.0
+      for (i <- Range(0, indexArray.size)) {
+        val tfFreq = tf.apply(indexArray(i))
+
+        if (tfFreq > 0.5) //sparse vector, need tfFreq > 0.0
           indexFreqArray += (i -> tfFreq)
       }
-      Vectors.sparse(thisTermArray.size, indexFreqArray)
+      Vectors.sparse(indexArray.size, indexFreqArray)
     }
 
     docTerm.cache()
@@ -74,7 +78,7 @@ object Plda {
         }*/
 
     // Cluster the documents into three topics using LDA
-    val ldaModel = new LDA().setK(topicNum).setAlpha(alpha).setBeta(beta).setMaxIterations(maxIterations).run(docTerm)
+    val ldaModel: LDAModel = new LDA().setK(topicNum).setAlpha(alpha).setBeta(beta).setMaxIterations(maxIterations).run(docTerm)
     //save to hdfs
 
     // Output topics. Each is a distribution over terms (matching term count vectors)
@@ -89,7 +93,7 @@ object Plda {
       println()
     }
 
-    // Save and load model.
+    //  Save and load model.
     //    ldaModel.save(sc, "myLDAModel")
     //    val sameModel = new DistributedLDAModel().load(sc, "myLDAModel")
     //    new DistributedLDAModel().topicDistributions
