@@ -1,13 +1,9 @@
 package com.tang
 
-import org.apache.spark.SparkContext._
-
-import scala.collection.JavaConverters._
 import scala.collection.mutable
-
 import org.apache.spark.mllib.linalg.{Vector, Vectors}
 import org.apache.spark.rdd.RDD
-import org.apache.spark.util.Utils
+
 
 /**
  * Created by Tang Lizhe on 2015/9/14.
