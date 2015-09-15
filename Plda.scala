@@ -85,13 +85,37 @@ object Plda {
     val termTopicMatrix = ldaModel.topicsMatrix
     //save to hdfs
 
-    for (topic <- Range(0, topicNum)) {
-      print("Topic " + topic + ":")
-      for (term <- Range(0, ldaModel.vocabSize)) {
-        print(" " + termTopicMatrix(term, topic))
+    //    for (topic <- Range(0, topicNum)) {
+    //      print("Topic " + topic + ":")
+    //      for (term <- Range(0, ldaModel.vocabSize)) {
+    //        print(" " + termTopicMatrix(term, topic))
+    //      }
+    //      println()
+    //    }
+
+    val topicTermArray = ldaModel.describeTopics()
+
+    //below code just for write topicTermArray into hdfs
+    val stringArray = new ArrayBuffer[String]()
+    for (i <- Range(0, topicTermArray.size)) {
+      val stringbuffer = new StringBuilder
+      val index = topicTermArray(i)._1
+      val score = topicTermArray(i)._2
+      stringbuffer.append("topic" + i + ",")
+      stringbuffer.append("{[")
+      for (j <- Range(0, index.size)) {
+        stringbuffer.append(index(j) + ",")
       }
-      println()
+      stringbuffer.append("],[")
+      for (j <- Range(0, score.size)) {
+        stringbuffer.append(score(j) + ",")
+      }
+      stringbuffer.append("]}")
+      println(stringbuffer.toString())
+      stringArray += stringbuffer.toString()
     }
+    val topicTerm = sc.parallelize(stringArray, 2)
+    topicTerm.saveAsTextFile(args(1) + "/topic-Term")
 
     //  Save and load model.
     //    ldaModel.save(sc, "myLDAModel")
