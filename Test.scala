@@ -3,6 +3,7 @@ package com.tang
 import org.apache.spark._
 import org.apache.spark.mllib.clustering.{LDA, DistributedLDAModel}
 import org.apache.spark.mllib.linalg.Vectors
+import org.apache.spark.mllib.linalg.{SparseMatrix, DenseMatrix}
 
 /**
  * Created by Tang Lizhe on 2015/9/12.
@@ -10,32 +11,12 @@ import org.apache.spark.mllib.linalg.Vectors
  */
 
 object Test {
-  def main(args: Array[String]) {
-    // Load and parse the data
-    val conf = new SparkConf().setAppName("PLDA_Test")
-    val sc = new SparkContext(conf)
+  def main(args: Array[String]): Unit = {
+    val m = new DenseMatrix(2, 3, Array(1.0, 2.0, 3.0, 4.0, 5.0, 6.0))
+    val cols = m.toString().split("\n")
+    println(m.toString())
 
-    val data = sc.textFile("hdfs://10.107.20.25:9000/user/solo/ldadata/sample_lda_data.txt")
-    val parsedData = data.map(s => Vectors.dense(s.trim.split(' ').map(_.toDouble)))
-    // Index documents with unique IDs
-    val corpus = parsedData.zipWithIndex.map(_.swap).cache()
-
-    // Cluster the documents into three topics using LDA
-    val ldaModel = new LDA().setK(3).run(corpus)
-
-    // Output topics. Each is a distribution over words (matching word count vectors)
-    println("Learned topics (as distributions over vocab of " + ldaModel.vocabSize + " words):")
-    val topics = ldaModel.topicsMatrix
-    for (topic <- Range(0, 3)) {
-      print("Topic " + topic + ":")
-      for (word <- Range(0, ldaModel.vocabSize)) {
-        print(" " + topics(word, topic));
-      }
-      println()
-    }
-
-    // Save and load model.
-    //    ldaModel.save(sc, "myLDAModel")
-    //    val sameModel = DistributedLDAModel.load(sc, "myLDAModel")
+    //    val m2 = new SparseMatrix(2, 3, Array(0, 1, 2), Array(0, 1), Array(1.0, 2.0, 3.0, 4.0, 5.0, 6.0))
+    //    println(m2)
   }
 }

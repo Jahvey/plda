@@ -1,7 +1,7 @@
 package com.tang
 
 import org.apache.spark.mllib.clustering._
-import org.apache.spark.mllib.linalg.Vectors
+import org.apache.spark.mllib.linalg.{SparseMatrix, Vectors}
 import org.apache.spark._
 import org.apache.spark.SparkContext
 import scala.collection.mutable.ArrayBuffer
@@ -33,33 +33,27 @@ object Plda {
     val hashTF = new HashingTF(1 << 30)
     val hashDocTerm = hashTF.transform(doc.mapValues(_.toIterable))
 
-    val termCount = doc.map(_._2).flatMap(_.toIterator).map(term => (term, 1L)).reduceByKey(_ + _)
-    termCount.cache()
+    val totalTermCount = doc.map(_._2).flatMap(_.toIterator).map(term => (term, 1L)).reduceByKey(_ + _)
+    totalTermCount.cache()
     //save to hdfs
-    termCount.saveAsTextFile(args(1) + "/termCount")
+    totalTermCount.saveAsTextFile(args(1) + "/TotalTermCount")
 
-    val term = termCount.filter(_._2 > minDocFreq).map(_._1)
-    //print all terms(has filter)
-    /*    for (word <- termArray) {
-          print(word + " ")
-        }
-        println()*/
+    val reducedTermCount = totalTermCount.filter(_._2 > minDocFreq)
+    reducedTermCount.cache()
+    //save to hdfs
+    reducedTermCount.saveAsTextFile(args(1) + "/ReducedTermCount")
 
-    val index = term.map { word =>
-      hashTF.indexOf(word)
-    }
-    val indexArray = index.collect() //index array of term's index in hashDocTerm
-
-    //broadcast
-    //val bcIndexArray = hashDocTerm.context.broadcast(indexArray)
+    val term = reducedTermCount.map(_._1)
+    val index = term.map(word => hashTF.indexOf(word))
+    //reduced term's index of term index in hashDocTerm
+    val indexArray = index.collect()
 
     val docTerm = hashDocTerm.mapValues { tf =>
-      //val thisIndexArray = bcIndexArray.value
       var indexFreqArray = new ArrayBuffer[(Int, Double)]()
       for (i <- Range(0, indexArray.size)) {
         val tfFreq = tf.apply(indexArray(i))
-
-        if (tfFreq > 0.5) //sparse vector, need tfFreq > 0.0
+        //sparse vector, filter tfFreq=0.0 elements, need tfFreq >= 1.0
+        if (tfFreq > 0.5)
           indexFreqArray += (i -> tfFreq)
       }
       Vectors.sparse(indexArray.size, indexFreqArray)
@@ -67,60 +61,27 @@ object Plda {
 
     docTerm.cache()
     //save to hdfs
-    docTerm.saveAsTextFile(args(1) + "/docTermMatrix")
-    /*    val docTermMatrix = docTerm.map(_._2).collect()
-        for (doc <- Range(0, docTermMatrix.size)) {
-          val v = docTermMatrix(doc)
-          for (term <- Range(0, v.size)) {
-            print(v(term) + " ")
-          }
-          println()
-        }*/
+    docTerm.saveAsTextFile(args(1) + "/DocTermMatrix")
 
     // Cluster the documents into three topics using LDA
-    val ldaModel: LDAModel = new LDA().setK(topicNum).setAlpha(alpha).setBeta(beta).setMaxIterations(maxIterations).run(docTerm)
+    val distributedLdaModel: DistributedLDAModel = new LDA()
+      .setK(topicNum)
+      .setAlpha(alpha)
+      .setBeta(beta)
+      .setMaxIterations(maxIterations)
+      .run(docTerm).asInstanceOf[DistributedLDAModel]
+
+    val topicDistribution = distributedLdaModel.topicDistributions
     //save to hdfs
+    topicDistribution.saveAsTextFile(args(1) + "/TopicDistribution")
 
-    // Output topics. Each is a distribution over terms (matching term count vectors)
-    val termTopicMatrix = ldaModel.topicsMatrix
+    // Output the term-topics
+    val termTopicMatrix = distributedLdaModel.topicsMatrix
+    val topicColArray = termTopicMatrix.toString(termTopicMatrix.numRows, termTopicMatrix.numCols * 24).split("\n")
+    val topicCol = sc.parallelize(topicColArray, 2)
     //save to hdfs
+    topicCol.saveAsTextFile(args(1) + "/TermTopicMatrix")
 
-    //    for (topic <- Range(0, topicNum)) {
-    //      print("Topic " + topic + ":")
-    //      for (term <- Range(0, ldaModel.vocabSize)) {
-    //        print(" " + termTopicMatrix(term, topic))
-    //      }
-    //      println()
-    //    }
-
-    val topicTermArray = ldaModel.describeTopics()
-
-    //below code just for write topicTermArray into hdfs
-    val stringArray = new ArrayBuffer[String]()
-    for (i <- Range(0, topicTermArray.size)) {
-      val stringbuffer = new StringBuilder
-      val index = topicTermArray(i)._1
-      val score = topicTermArray(i)._2
-      stringbuffer.append("topic" + i + ",")
-      stringbuffer.append("{[")
-      for (j <- Range(0, index.size)) {
-        stringbuffer.append(index(j) + ",")
-      }
-      stringbuffer.append("],[")
-      for (j <- Range(0, score.size)) {
-        stringbuffer.append(score(j) + ",")
-      }
-      stringbuffer.append("]}")
-      println(stringbuffer.toString())
-      stringArray += stringbuffer.toString()
-    }
-    val topicTerm = sc.parallelize(stringArray, 2)
-    topicTerm.saveAsTextFile(args(1) + "/topic-Term")
-
-    //  Save and load model.
-    //    ldaModel.save(sc, "myLDAModel")
-    //    val sameModel = new DistributedLDAModel().load(sc, "myLDAModel")
-    //    new DistributedLDAModel().topicDistributions
     sc.stop()
   }
 }
