@@ -12,6 +12,7 @@ import org.apache.spark.mllib.linalg.{SparseMatrix, DenseMatrix}
 
 object Test {
   def main(args: Array[String]): Unit = {
+    println(BigInt(10).pow(9))
     val m = new DenseMatrix(2, 3, Array(1.0, 2.0, 3.0, 4.0, 5.0, 6.0))
     val cols = m.toString().split("\n")
     println(m.toString())
