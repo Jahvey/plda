@@ -1,9 +1,10 @@
 package com.tang
 
+import org.apache.spark.SparkContext
+import org.apache.spark.SparkConf
+
 import org.apache.spark.mllib.clustering._
 import org.apache.spark.mllib.linalg.Vectors
-import org.apache.spark._
-import org.apache.spark.SparkContext
 import scala.collection.mutable.ArrayBuffer
 
 /**
@@ -11,18 +12,22 @@ import scala.collection.mutable.ArrayBuffer
  */
 object Plda {
   def main(args: Array[String]) {
-    // Load and parse the data
-    val topicNum = 20
-    val alpha = -1
-    val beta = -1
-    val maxIterations = 150
+    val topicNum = args(0).toInt
+    val alpha = args(1).toDouble
+    val beta = args(2).toDouble
+    val maxIterations = args(3).toInt
+    val minDocThreshold = args(4).toInt
+    val hdfsHomeDir = "hdfs://node-25:9000/user/solo/"
+    val inputPath = hdfsHomeDir + args(5)
+    val outputPath = hdfsHomeDir + args(6)
+
     /**
      * If the word count value less than minDocFreq, the word will be filtered and will not be used
      * to calculate in following spark MLlib LDA computing.
      */
-    val minDocFreq = 10
+    val minDocFreq = minDocThreshold
 
-    val conf = new SparkConf().setAppName("Spark LDA").set("spark.executor.memory", "2g")
+    val conf = new SparkConf().setAppName("Spark LDA")
     val sc = new SparkContext(conf)
 
     /**
@@ -31,7 +36,8 @@ object Plda {
      * Array[String] store all the words in document.
      */
     var start = System.nanoTime()
-    val file = sc.textFile(args(0))
+    // Load and parse the data
+    val file = sc.textFile(inputPath)
     val doc = file.map { line =>
       val w = line.trim.split(";;;;;", 2)
       val docno = w(0).trim.toLong
@@ -68,12 +74,12 @@ object Plda {
     val totalWordCount = doc.map(_._2).flatMap(_.toIterator).map(w => (w, 1L)).reduceByKey(_ + _)
     totalWordCount.cache()
     //save to hdfs
-    totalWordCount.saveAsTextFile(args(1) + "/TotalWordCount")
+    totalWordCount.saveAsTextFile(outputPath + "/TotalWordCount")
 
     val reducedWordCount = totalWordCount.filter(_._2 > minDocFreq)
     reducedWordCount.cache()
     //save to hdfs
-    reducedWordCount.saveAsTextFile(args(1) + "/ReducedWordCount")
+    reducedWordCount.saveAsTextFile(outputPath + "/ReducedWordCount")
     end = System.nanoTime()
     val timeWordCount = end - start
 
@@ -89,20 +95,22 @@ object Plda {
     val wordColumn = reducedWordCount.map(_._1)
     //reduced word's index of word index in hashDocWord
     val indexArray = wordColumn.map(word => hashTF.indexOf(word)).collect()
+    val bcIndexArray = hashDocWord.context.broadcast(indexArray)
 
     val docWord = hashDocWord.mapValues { tf =>
+      val thisIndexArray = bcIndexArray.value
       var indexFreqArray = new ArrayBuffer[(Int, Double)]()
-      for (i <- Range(0, indexArray.length)) {
-        val tfFreq = tf.apply(indexArray(i))
+      for (i <- Range(0, thisIndexArray.length)) {
+        val tfFreq = tf.apply(thisIndexArray(i))
         //sparse vector, filter tfFreq=0.0 elements, need tfFreq >= 1.0
         if (tfFreq > 0.5)
           indexFreqArray += (i -> tfFreq)
       }
-      Vectors.sparse(indexArray.length, indexFreqArray)
+      Vectors.sparse(thisIndexArray.length, indexFreqArray)
     }
     docWord.cache()
     //save to hdfs
-    docWord.saveAsTextFile(args(1) + "/DocWordMatrix")
+    docWord.saveAsTextFile(outputPath + "/DocWordMatrix")
     end = System.nanoTime()
     val timeDocWordConstruct = end - start
 
@@ -113,6 +121,7 @@ object Plda {
       .setAlpha(alpha)
       .setBeta(beta)
       .setMaxIterations(maxIterations)
+      .setOptimizer(new EMLDAOptimizer)
       .run(docWord).asInstanceOf[DistributedLDAModel]
     end = System.nanoTime()
     val timeLdaRun = end - start
@@ -122,9 +131,9 @@ object Plda {
      * is example as: doc t1 t2 t3 ... tn, t is the score of each topic possess.
      */
     start = System.nanoTime()
-    val topicDistribution = distributedLdaModel.topicDistributions
+    val topicDistribution = distributedLdaModel.topicDistributions.sortByKey()
     //save to hdfs
-    topicDistribution.saveAsTextFile(args(1) + "/TopicDistribution")
+    topicDistribution.saveAsTextFile(outputPath + "/TopicDistribution")
     end = System.nanoTime()
     val timeTopicDistributionOutput = end - start
 
@@ -135,19 +144,26 @@ object Plda {
      * It is just a matrix on single node, not a spark rdd.
      */
     start = System.nanoTime()
-    val wordTopicMatrix = distributedLdaModel.topicsMatrix
-    val topicColArray = wordTopicMatrix.toString(wordTopicMatrix.numRows, wordTopicMatrix.numCols * 24).split("\n")
-    val topicCol = sc.parallelize(topicColArray, 2)
-    //save to hdfs
-    topicCol.saveAsTextFile(args(1) + "/WordTopicMatrix")
+    /*    val wordTopicMatrix = distributedLdaModel.topicsMatrix
+        val wordTopicArray = wordTopicMatrix.toString(wordTopicMatrix.numRows, wordTopicMatrix.numCols * 24).split("\n")
+        val wordTopic = sc.parallelize(wordTopicArray, 2)
+        //save to hdfs
+        wordTopic.saveAsTextFile(outputPath + "/WordTopicMatrix")*/
     end = System.nanoTime()
     val timeWordTopicMatrixOutput = end - start
+
+    //spark context stop
     sc.stop()
+
 
     // one minute = how much nano?
     val minute = (BigInt(10).pow(9) * 60).toDouble
     println("------------------------------------------------------------------------------------")
-    println("Unit:minute")
+    println("Unit: Minute")
+    println(s"Total time: ${
+      (timeFileInput + timeHashTFConstruct + timeWordCount + timeDocWordConstruct +
+        timeLdaRun + timeTopicDistributionOutput + timeWordTopicMatrixOutput) / minute
+    }")
     println("FileInput: " + timeFileInput / minute)
     println("HashTFConstruct: " + timeHashTFConstruct / minute)
     println("WordCount: " + timeWordCount / minute)

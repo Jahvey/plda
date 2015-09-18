@@ -1,6 +1,8 @@
 package com.tang
 
-import org.apache.spark._
+import org.apache.spark.SparkContext
+import org.apache.spark.SparkConf
+
 import org.apache.spark.mllib.clustering.{LDA, DistributedLDAModel}
 import org.apache.spark.mllib.linalg.Vectors
 import org.apache.spark.mllib.linalg.{SparseMatrix, DenseMatrix}
@@ -12,13 +14,10 @@ import org.apache.spark.mllib.linalg.{SparseMatrix, DenseMatrix}
 
 object Test {
   def main(args: Array[String]): Unit = {
-    println(BigInt(10).pow(9))
-    val m = new DenseMatrix(2, 3, Array(1.0, 2.0, 3.0, 4.0, 5.0, 6.0))
-    val cols = m.toString().split("\n")
-    
-    println(m.toString())
+    val conf = new SparkConf().setAppName("Test").setMaster("local")
+    val sc = new SparkContext(conf)
 
-    //    val m2 = new SparseMatrix(2, 3, Array(0, 1, 2), Array(0, 1), Array(1.0, 2.0, 3.0, 4.0, 5.0, 6.0))
-    //    println(m2)
+    val r0 = sc.parallelize(1 to 10, 2)
+    println(r0.collect())
   }
 }
