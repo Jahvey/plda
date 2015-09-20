@@ -5,6 +5,7 @@ import org.apache.spark.SparkConf
 
 import org.apache.spark.mllib.clustering._
 import org.apache.spark.mllib.linalg.Vectors
+import org.apache.spark.storage.StorageLevel
 import scala.collection.mutable.ArrayBuffer
 
 /**
@@ -44,7 +45,7 @@ object Plda {
       val words = w(1).trim.split(" ")
       docno -> words
     }
-    doc.cache()
+    doc.persist(StorageLevel.MEMORY_AND_DISK)
     var end = System.nanoTime()
     val timeFileInput = end - start
 
@@ -72,12 +73,12 @@ object Plda {
      */
     start = System.nanoTime()
     val totalWordCount = doc.map(_._2).flatMap(_.toIterator).map(w => (w, 1L)).reduceByKey(_ + _)
-    totalWordCount.cache()
+    totalWordCount.persist(StorageLevel.MEMORY_AND_DISK)
     //save to hdfs
     totalWordCount.saveAsTextFile(outputPath + "/TotalWordCount")
 
     val reducedWordCount = totalWordCount.filter(_._2 > minDocFreq)
-    reducedWordCount.cache()
+    reducedWordCount.persist(StorageLevel.MEMORY_AND_DISK)
     //save to hdfs
     reducedWordCount.saveAsTextFile(outputPath + "/ReducedWordCount")
     end = System.nanoTime()
@@ -108,11 +109,16 @@ object Plda {
       }
       Vectors.sparse(thisIndexArray.length, indexFreqArray)
     }
-    docWord.cache()
+    docWord.persist(StorageLevel.MEMORY_AND_DISK)
     //save to hdfs
     docWord.saveAsTextFile(outputPath + "/DocWordMatrix")
     end = System.nanoTime()
     val timeDocWordConstruct = end - start
+
+    //    reducedWordCount.unpersist()
+    //    totalWordCount.unpersist()
+    //    hashDocWord.unpersist()
+    //    doc.unpersist()
 
     // Cluster the documents into three topics using LDA
     start = System.nanoTime()
@@ -131,7 +137,7 @@ object Plda {
      * is example as: doc t1 t2 t3 ... tn, t is the score of each topic possess.
      */
     start = System.nanoTime()
-    val topicDistribution = distributedLdaModel.topicDistributions.sortByKey()
+    val topicDistribution = distributedLdaModel.topicDistributions
     //save to hdfs
     topicDistribution.saveAsTextFile(outputPath + "/TopicDistribution")
     end = System.nanoTime()
