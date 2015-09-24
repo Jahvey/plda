@@ -109,16 +109,17 @@ object Plda {
       }
       Vectors.sparse(thisIndexArray.length, indexFreqArray)
     }
-    docWord.persist(StorageLevel.MEMORY_AND_DISK)
+    docWord.persist(StorageLevel.MEMORY_AND_DISK_2)
     //save to hdfs
     docWord.saveAsTextFile(outputPath + "/DocWordMatrix")
     end = System.nanoTime()
     val timeDocWordConstruct = end - start
 
-    //    reducedWordCount.unpersist()
-    //    totalWordCount.unpersist()
-    //    hashDocWord.unpersist()
-    //    doc.unpersist()
+    doc.unpersist()
+    hashDocWord.unpersist()
+    totalWordCount.unpersist()
+    reducedWordCount.unpersist()
+    wordColumn.unpersist()
 
     // Cluster the documents into three topics using LDA
     start = System.nanoTime()

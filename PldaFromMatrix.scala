@@ -51,7 +51,7 @@ object PldaFromMatrix {
       val vector = Vectors.sparse(length, indexArray, valueArray)
       docno -> vector
     }
-    docWord.persist(StorageLevel.MEMORY_AND_DISK)
+    docWord.persist(StorageLevel.MEMORY_AND_DISK_2)
     var end = System.nanoTime()
     val timeDocWordConstruct = end - start
 
