@@ -6,6 +6,7 @@ import org.apache.spark.SparkConf
 import org.apache.spark.mllib.clustering._
 import org.apache.spark.mllib.linalg.Vectors
 import org.apache.spark.storage.StorageLevel
+import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 
 /**
@@ -18,7 +19,7 @@ object Plda {
     val beta = args(2).toDouble
     val maxIterations = args(3).toInt
     val minDocThreshold = args(4).toInt
-    val hdfsHomeDir = "hdfs://node-25:9000/user/solo/"
+    val hdfsHomeDir = "hdfs://10.107.20.25:9000/user/solo/"
     val inputPath = hdfsHomeDir + args(5)
     val outputPath = hdfsHomeDir + args(6)
 
@@ -50,22 +51,6 @@ object Plda {
     val timeFileInput = end - start
 
     /**
-     * We build a very large matrix to store the word frequence, the rows is the count
-     * of documents, the cols is 2<<30. So large cols basically solved the hashing conflicting.
-     * To save space of matrix, we represent it as sparse way. Our aim is trans rdd
-     * doc:RDD[(Long, Array[String])] to hashDocWord:RDD[(Long, Vector)].
-     * For each document in doc:RDD[(Long, Array[String])], we hash the word to a particular
-     * column colIndex, and let Vector(colIndex)+=1. So, when one document has be precessing finished,
-     * the document's word count information will stored in Vector.
-     * Similarly, we present Vector as sparse way.
-     */
-    start = System.nanoTime()
-    val hashTF = new HashingTF(1 << 30)
-    val hashDocWord = hashTF.transform(doc.mapValues(_.toIterable))
-    end = System.nanoTime()
-    val timeHashTFConstruct = end - start
-
-    /**
      * To construct a word column, we use word count algorithm to produce a sorted
      * word array with count value, it's totalWordCount:RDD[(String, Long)].
      * But to improve the performance of lda algorithm, we should reduce the size of word column by filtering
@@ -93,45 +78,87 @@ object Plda {
      * Basing the index array, we trans hashDocWord to lda input format, the docWord:RDD[(Long, Vector)].
      */
     start = System.nanoTime()
-    val wordColumn = reducedWordCount.map(_._1)
-    //reduced word's index of word index in hashDocWord
-    val indexArray = wordColumn.map(word => hashTF.indexOf(word)).collect()
-    val bcIndexArray = hashDocWord.context.broadcast(indexArray)
+    val wordIndexMap = reducedWordCount.map(_._1).zipWithIndex().mapValues(_.toInt).collect().toMap
 
-    val docWord = hashDocWord.mapValues { tf =>
-      val thisIndexArray = bcIndexArray.value
-      var indexFreqArray = new ArrayBuffer[(Int, Double)]()
-      for (i <- Range(0, thisIndexArray.length)) {
-        val tfFreq = tf.apply(thisIndexArray(i))
-        //sparse vector, filter tfFreq=0.0 elements, need tfFreq >= 1.0
-        if (tfFreq > 0.5)
-          indexFreqArray += (i -> tfFreq)
+    val docWordWithBlankLine = doc.mapValues { words =>
+      val docMap = new mutable.HashMap[String, Int]()
+      for (word <- words) {
+        if (wordIndexMap.contains(word)) {
+          docMap += word -> (docMap.getOrElse(word, 0) + 1)
+        }
       }
-      Vectors.sparse(thisIndexArray.length, indexFreqArray)
+
+      val indices = new ArrayBuffer[Int]()
+      val values = new ArrayBuffer[Double]()
+      for ((k, v) <- docMap) {
+        indices.append(wordIndexMap(k))
+        values.append(v.toDouble)
+      }
+      if (indices.size == 0)
+        Vectors.zeros(wordIndexMap.size)
+      else
+        Vectors.sparse(wordIndexMap.size, indices.toArray, values.toArray)
     }
+    //filter the empty document
+    val filteredDocWord = docWordWithBlankLine.filter(_._2.numActives > 0)
+
+    /**
+     * Modify the input data partition distribution
+     */
+    val docWord = filteredDocWord.coalesce(9, true)
+
     docWord.persist(StorageLevel.MEMORY_AND_DISK_2)
     //save to hdfs
     docWord.saveAsTextFile(outputPath + "/DocWordMatrix")
     end = System.nanoTime()
     val timeDocWordConstruct = end - start
 
-    doc.unpersist()
-    hashDocWord.unpersist()
+    /**
+     * release all cached rdd
+     */
     totalWordCount.unpersist()
     reducedWordCount.unpersist()
-    wordColumn.unpersist()
+    doc.unpersist()
 
     // Cluster the documents into three topics using LDA
     start = System.nanoTime()
-    val distributedLdaModel: DistributedLDAModel = new LDA()
+    val ldaModel: LDAModel = new LDA()
       .setK(topicNum)
       .setAlpha(alpha)
       .setBeta(beta)
       .setMaxIterations(maxIterations)
       .setOptimizer(new EMLDAOptimizer)
-      .run(docWord).asInstanceOf[DistributedLDAModel]
+      .run(docWord)
     end = System.nanoTime()
     val timeLdaRun = end - start
+
+    /**
+     * Save ldamodel to hdfs
+     */
+    ldaModel.save(sc, outputPath + "/LdaModel")
+
+    /**
+     * Load distributed lda model
+     */
+    val distributedLdaModel: DistributedLDAModel = DistributedLDAModel.load(sc, outputPath + "/LdaModel")
+
+    /**
+     * Output the topic description by some important words.
+     * This is unrecommended when the input document is very more. Because under this way, the word-topics matrix
+     * will be very large. The matrix is represent in dense way, and the matrix can't be stored distributed.
+     * It is just a matrix on single node, not a spark rdd.
+     */
+    start = System.nanoTime()
+    val describeTopic = distributedLdaModel.describeTopics(10)
+    val describeTopicRDD = sc.makeRDD[(Array[Int], Array[Double])](describeTopic, 1)
+
+    val topDocumentPerTopic = distributedLdaModel.topDocumentsPerTopic(10)
+    val topDocumentPerTopicRDD = sc.makeRDD[(Array[Long], Array[Double])](topDocumentPerTopic, 1)
+    //save to hdfs
+    describeTopicRDD.saveAsTextFile(outputPath + "/TopicDescribedByWord")
+    topDocumentPerTopicRDD.saveAsTextFile(outputPath + "/TopDocumentPerTopic")
+    end = System.nanoTime()
+    val timeWordTopicMatrixOutput = end - start
 
     /**
      * Get the result of lda, document distributed by topic, result format
@@ -139,25 +166,12 @@ object Plda {
      */
     start = System.nanoTime()
     val topicDistribution = distributedLdaModel.topicDistributions
+    val topTopicPerDocument = distributedLdaModel.topTopicsPerDocument(10)
     //save to hdfs
     topicDistribution.saveAsTextFile(outputPath + "/TopicDistribution")
+    topTopicPerDocument.saveAsTextFile(outputPath + "/TopTopicPerDocument")
     end = System.nanoTime()
     val timeTopicDistributionOutput = end - start
-
-    /**
-     * Output the word-topics matrix.
-     * This is unrecommended when the input document is very more. Because under this way, the word-topics matrix
-     * will be very large. The matrix is represent in dense way, and the matrix can't be stored distributed.
-     * It is just a matrix on single node, not a spark rdd.
-     */
-    start = System.nanoTime()
-    /*    val wordTopicMatrix = distributedLdaModel.topicsMatrix
-        val wordTopicArray = wordTopicMatrix.toString(wordTopicMatrix.numRows, wordTopicMatrix.numCols * 24).split("\n")
-        val wordTopic = sc.parallelize(wordTopicArray, 2)
-        //save to hdfs
-        wordTopic.saveAsTextFile(outputPath + "/WordTopicMatrix")*/
-    end = System.nanoTime()
-    val timeWordTopicMatrixOutput = end - start
 
     //spark context stop
     sc.stop()
@@ -168,11 +182,10 @@ object Plda {
     println("------------------------------------------------------------------------------------")
     println("Unit: Minute")
     println(s"Total time: ${
-      (timeFileInput + timeHashTFConstruct + timeWordCount + timeDocWordConstruct +
+      (timeFileInput + timeWordCount + timeDocWordConstruct +
         timeLdaRun + timeTopicDistributionOutput + timeWordTopicMatrixOutput) / minute
     }")
     println("FileInput: " + timeFileInput / minute)
-    println("HashTFConstruct: " + timeHashTFConstruct / minute)
     println("WordCount: " + timeWordCount / minute)
     println("DocWordConstruct: " + timeDocWordConstruct / minute)
     println("LdaRun: " + timeLdaRun / minute)

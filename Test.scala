@@ -16,12 +16,34 @@ import scala.io.Source
 
 object Test {
   def main(args: Array[String]): Unit = {
-    val s2 = "(100,(5,[],[]))"
+    val topicNum = args(0).toInt
+    val alpha = args(1).toDouble
+    val beta = args(2).toDouble
+    val maxIterations = args(3).toInt
+    val minDocThreshold = args(4).toInt
+    val hdfsHomeDir = "hdfs://10.107.20.25:9000/user/solo/"
+    val inputPath = hdfsHomeDir + args(5)
+    val outputPath = hdfsHomeDir + args(6)
 
-    val filename = "docWordMatrix10"
-    val file = Source.fromFile(filename, "utf-8")
-    val sList = file.getLines().toList
-    val docWordList = sList.map { line =>
+    /**
+     * If the word count value less than minDocFreq, the word will be filtered and will not be used
+     * to calculate in following spark MLlib LDA computing.
+     */
+    val minDocFreq = minDocThreshold
+
+    val conf = new SparkConf().setAppName("Spark LDA")
+    val sc = new SparkContext(conf)
+
+    /**
+     * Let all documents from input file stored by doc:RDD[(Long, Array[String])].
+     * Long position store docno.
+     * Array[String] store all the words in document.
+     */
+    var start = System.nanoTime()
+    // Load and parse the data
+    val file = sc.textFile(inputPath)
+    val docWord = file.map { line =>
+      // space docno vector.size indexArray valueArray
       val w = line.trim.split("(\\()|(,\\()|(,\\[)|(\\],\\[)|(\\]\\)\\))")
       val docno = w(1).trim.toLong
       val length = w(2).trim.toInt
@@ -34,6 +56,7 @@ object Test {
       val vector = Vectors.sparse(length, indexArray, valueArray)
       docno -> vector
     }
-    docWordList foreach println
+    println("-------------------------------------------------------------------------------------------")
+    println(docWord)
   }
 }
